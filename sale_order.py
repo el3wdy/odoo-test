@@ -6,7 +6,7 @@ from collections import defaultdict
 import itertools
 
 import random
-
+import logging
 from odoo import api, fields, models, _
 from odoo.exceptions import UserError, ValidationError
 from odoo.fields import Command
@@ -513,14 +513,37 @@ class SaleOrder(models.Model):
         This is calculated by taking the points on the coupon, the points the order will give to the coupon (if applicable) and removing the points taken by already applied rewards.
         """
         self.ensure_one()
-        points = coupon.points
-        if coupon.program_id.applies_on != 'future' and self.state not in ('sale', 'done'):
-            # Points that will be given by the order upon confirming the order
-            points += self.coupon_point_ids.filtered(lambda p: p.coupon_id == coupon).points
-        # Points already used by rewards
-        points -= sum(self.order_line.filtered(lambda l: l.coupon_id == coupon).mapped('points_cost'))
+        user = self.env.user
+        user_loyalty_points = user.loyalty_points if user else 0
+    
+        points = user_loyalty_points
+        logging.info("points: " + str(points))
+
+        # Check if the order is not in 'sale' or 'done' state to add points from coupon_point_ids
+        if self.state not in ('sale', 'done'):
+            # Points already used by rewards
+            used_points = sum(self.order_line.filtered(lambda l: l.coupon_id == coupon).mapped('points_cost'))
+    
+            logging.info("coupon.points: " + str(coupon.points))
+
+            logging.info("used_points: " + str(used_points))
+
+            # Check if the coupon has already been applied to the current order
+            # if used_points > 0:
+            #     # If the coupon is already applied, return 0 points
+            #     logging.info("Coupon already applied to this order.")
+            #     return 0
+            
+            # Add points from coupon_point_ids if the user didn't already use those points
+            points += max(coupon.points - used_points, 0)
+            logging.info("points2: " + str(points))
+
+        # Round the points according to the coupon's currency
         points = coupon.currency_id.round(points)
-        return points
+        logging.info("points3: " + str(points))
+        balance = points - used_points
+        logging.info("balance: " + str(balance))
+        return balance
 
     def _add_points_for_coupon(self, coupon_points):
         """
@@ -593,9 +616,9 @@ class SaleOrder(models.Model):
                 # Invalidate the old global discount as it may impact the new discount to apply
                 global_discount_reward_lines._reset_loyalty(True)
                 old_reward_lines |= global_discount_reward_lines
-        if not reward.program_id.is_nominative and reward.program_id.applies_on == 'future' and coupon in self.coupon_point_ids.coupon_id:
-            return {'error': _('The coupon can only be claimed on future orders.')}
-        elif self._get_real_points_for_coupon(coupon) < reward.required_points:
+        # if not reward.program_id.is_nominative and reward.program_id.applies_on == 'future' and coupon in self.coupon_point_ids.coupon_id:
+        #     return {'error': _('The coupon can only be claimed on future orders.')}
+        if self._get_real_points_for_coupon(coupon) < reward.required_points:
             return {'error': _('The coupon does not have enough points for the selected reward.')}
         reward_vals = self._get_reward_line_values(reward, coupon, **kwargs)
         self._write_vals_from_reward_vals(reward_vals, old_reward_lines)
